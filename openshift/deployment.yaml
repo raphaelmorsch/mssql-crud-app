@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mssql-crud-app
+  labels:
+    app: mssql-crud-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mssql-crud-app
+  template:
+    metadata:
+      labels:
+        app: mssql-crud-app
+    spec:
+      containers:
+        - name: mssql-crud-app
+          image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/mssql-crud-app:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MSSQL_HOST
+              value: "mssql-deployment"
+            - name: MSSQL_PORT
+              value: "1433"
+            - name: MSSQL_USER
+              value: "sa"
+            - name: MSSQL_SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mssql
+                  key: MSSQL_SA_PASSWORD
+            - name: MSSQL_DATABASE
+              value: "cruddb"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mssql-crud-app
+  labels:
+    app: mssql-crud-app
+spec:
+  selector:
+    app: mssql-crud-app
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mssql-crud-app
+  labels:
+    app: mssql-crud-app
+spec:
+  to:
+    kind: Service
+    name: mssql-crud-app
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
