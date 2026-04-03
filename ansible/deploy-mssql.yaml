@@ -1,0 +1,148 @@
+---
+- name: Deploy SQL Server on OpenShift
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    namespace: sql-server
+    storage_class_name: ocs-storagecluster-ceph-rbd
+    pvc_size: 8Gi
+    mssql_name: mssql-deployment
+    service_name: mssql-deployment
+    secret_name: mssql
+    mssql_pid: Developer
+    mssql_image: mcr.microsoft.com/mssql/server:2022-latest
+    sa_password: "A12345678bA"
+
+  tasks:
+    - name: Ensure namespace exists
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ namespace }}"
+
+    - name: Create SQL Server secret
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ namespace }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ secret_name }}"
+          type: Opaque
+          stringData:
+            MSSQL_SA_PASSWORD: "{{ sa_password }}"
+
+    - name: Create PVC for SQL Server
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ namespace }}"
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: mssql-data
+          spec:
+            storageClassName: "{{ storage_class_name }}"
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: "{{ pvc_size }}"
+
+    - name: Create SQL Server deployment
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ namespace }}"
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ mssql_name }}"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: mssql
+            template:
+              metadata:
+                labels:
+                  app: mssql
+              spec:
+                terminationGracePeriodSeconds: 30
+                hostname: mssqlinst
+                securityContext:
+                  fsGroupChangePolicy: OnRootMismatch
+                containers:
+                  - name: mssql
+                    image: "{{ mssql_image }}"
+                    resources:
+                      requests:
+                        memory: "2G"
+                        cpu: "2000m"
+                      limits:
+                        memory: "2G"
+                        cpu: "2000m"
+                    ports:
+                      - containerPort: 1433
+                    securityContext:
+                      capabilities:
+                        add:
+                          - NET_BIND_SERVICE
+                    env:
+                      - name: MSSQL_PID
+                        value: "{{ mssql_pid }}"
+                      - name: ACCEPT_EULA
+                        value: "Y"
+                      - name: MSSQL_SA_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: "{{ secret_name }}"
+                            key: MSSQL_SA_PASSWORD
+                    volumeMounts:
+                      - name: mssqldb
+                        mountPath: /var/opt/mssql
+                volumes:
+                  - name: mssqldb
+                    persistentVolumeClaim:
+                      claimName: mssql-data
+
+    - name: Create SQL Server service
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ namespace }}"
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ service_name }}"
+          spec:
+            selector:
+              app: mssql
+            ports:
+              - protocol: TCP
+                port: 1433
+                targetPort: 1433
+            type: LoadBalancer
+
+    - name: Wait for deployment to become ready
+      kubernetes.core.k8s_info:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: "{{ mssql_name }}"
+        namespace: "{{ namespace }}"
+      register: deployment_info
+      until: >
+        deployment_info.resources | length > 0 and
+        deployment_info.resources[0].status.availableReplicas is defined and
+        deployment_info.resources[0].status.availableReplicas | int >= 1
+      retries: 30
+      delay: 10
+
+    - name: Show success message
+      ansible.builtin.debug:
+        msg: "SQL Server deployed successfully in namespace {{ namespace }}"
